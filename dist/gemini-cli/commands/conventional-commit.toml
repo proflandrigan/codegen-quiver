@@ -1,0 +1,56 @@
+description = "Write a clear, well-structured git commit message following the Conventional Commits specification. Use when the user asks to write, draft, or fix a commit message, or when staging changes that need a commit."
+prompt = """
+# Conventional Commit
+
+Generate a commit message that follows the [Conventional Commits](https://www.conventionalcommits.org/) specification.
+
+## Format
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+## Instructions
+
+1. Inspect what actually changed (`git diff --staged`, or `git diff` if nothing is staged). Base the message on the real diff, not assumptions.
+2. Choose the `type` from the list below that best matches the dominant change.
+3. Write the `description` in the imperative mood, lower case, no trailing period, ideally under 50 characters.
+4. Add a body only when the *why* is not obvious from the description. Wrap it at 72 characters and explain motivation and contrast with previous behavior — not the literal code changes.
+5. Add footers for breaking changes (`BREAKING CHANGE: <explanation>`) and issue references (`Refs: #123`).
+6. If the diff spans several unrelated concerns, say so and suggest splitting it into separate commits rather than forcing one message.
+
+## Types
+
+| Type | Use for |
+|------|---------|
+| `feat` | A new feature |
+| `fix` | A bug fix |
+| `docs` | Documentation only |
+| `style` | Formatting, whitespace — no code-meaning change |
+| `refactor` | Code change that neither fixes a bug nor adds a feature |
+| `perf` | Performance improvement |
+| `test` | Adding or correcting tests |
+| `build` | Build system or dependency changes |
+| `ci` | CI configuration and scripts |
+| `chore` | Maintenance that doesn't touch src or tests |
+
+## Examples
+
+```
+feat(auth): add refresh-token rotation
+
+Short-lived access tokens were forcing users to re-authenticate
+every 15 minutes. Rotate refresh tokens on each use so sessions
+survive as long as the user stays active.
+
+Refs: #482
+```
+
+```
+fix: prevent crash when config file is empty
+```
+"""
