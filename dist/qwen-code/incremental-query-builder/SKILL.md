@@ -1,0 +1,205 @@
+---
+name: incremental-query-builder
+description: Build a SQL query, dbt model, or dataframe pipeline from simple to complex, verifying each layer before adding the next. Use when the user is writing or debugging anything with joins, aggregations, or a target grain — especially when the result must be trusted (counts must reconcile, no double-counting, one row per the intended entity).
+---
+
+# Incremental Query Builder: Pin the Grain, Grow in Layers, Verify Every Step
+
+Do **not** write the whole query at once. The errors that hurt in analytics are
+silent — a join that fans out and double-counts, a row quietly dropped by an
+inner join, a filter that nukes 99% of the data, an aggregate computed at the
+wrong grain. A single 60-line query that "runs" tells you nothing about whether
+any of these happened.
+
+The discipline: **(1)** pin the *grain* and the *exact end result* with the user
+before writing any SQL, then **(2)** build the query one layer at a time, and
+**(3)** verify each layer with a cheap check before adding the next. Catch each
+error where it is introduced, not at the end where you can't tell which layer
+broke.
+
+---
+
+## Phase 0 — Pin the target (ALWAYS, before any SQL)
+
+Interrogate the user until all of the following are explicit. Do **not** start
+writing the query until they are. If the user resists nailing down a grain, that
+ambiguity *is* the first bug — resolve it first.
+
+- **Grain of the output.** What does exactly one row represent? ("One row per
+  customer per month.") This is the contract every later check is measured
+  against. State it as the unique key of the result.
+- **End result / shape.** Which columns and metrics are wanted, at what
+  granularity, and any *known sanity numbers* ("we have roughly 12k active
+  customers", "Q3 revenue was about $4.1M"). These become your reconciliation
+  targets later.
+- **Source tables + the driving table.** Which table defines the row population
+  (the base/driving table) versus which tables only enrich it. For every join,
+  get the join keys and the **expected relationship**: 1:1, many:1, 1:many, or
+  many:many. Flag any many:many up front — it *will* fan out unless aggregated or
+  deduped.
+- **Filters / time window.** What is filtered, and whether each filter applies
+  *before* or *after* aggregation (pre-aggregation `WHERE` vs post-aggregation
+  `HAVING`/qualifying logic changes the answer).
+
+Reflect it back in one sentence and get confirmation:
+
+> "One row per `<grain>`, driven by `<table>`, enriched by `<joins, each k:1>`,
+> filtered to `<window>`, expecting roughly `<N>` rows. Correct?"
+
+Only proceed once the user confirms.
+
+---
+
+## Phase 1 — Establish the base
+
+Start from the **driving table alone** — no joins yet. Verify:
+
+- Total row count (record it; this is the yardstick for every later step).
+- The declared grain key is **unique** and **non-null**.
+
+```sql
+-- grain uniqueness on the base population
+select
+  count(*)                         as rows,
+  count(distinct <grain_key>)      as distinct_keys,
+  count(*) - count(<grain_key>)    as null_keys
+from <driving_table>;
+-- rows must equal distinct_keys; null_keys must be 0
+```
+
+If `rows != distinct_keys`, the table is not at the grain you think it is —
+resolve that before joining anything.
+
+---
+
+## Phase 2 — Add joins one at a time, and verify each (the gate)
+
+Add **exactly one join**, re-run, then check before adding the next. Never stack
+multiple joins between checks.
+
+- **Row-count delta check.** Compare the new count to the previous baseline:
+  - Count **grew** on a join you declared 1:1 or many:1 → **fan-out**. The right
+    side has duplicate join keys. Stop and diagnose.
+  - Count **shrank** on what should be a left join → rows were dropped. Look for
+    an accidental inner join or null join keys.
+  - Count unchanged on a many:1 left join → as expected; proceed.
+
+- **Fan-out probe** — run this against the right-side table *before* trusting any
+  join you expect to be k:1:
+
+```sql
+-- does the right side have duplicate keys? (any row here => fan-out risk)
+select <join_key>, count(*) as n
+from <right_table>
+group by <join_key>
+having count(*) > 1
+order by n desc
+limit 20;
+```
+
+If a join legitimately needs a 1:many source, aggregate or dedupe that source to
+the grain *first* (a CTE rolled up to the join key), then join the rolled-up
+result so the row count stays stable.
+
+Only advance to the next join once the count behaves exactly as the declared
+relationship predicts. This is the gate — do not skip it.
+
+---
+
+## Phase 3 — Filters and derived columns
+
+Add filters and `CASE`/derived logic one meaningful change at a time.
+
+- Smoke-test the row count before and after each filter. Confirm the drop is the
+  *expected magnitude*. A filter that removes 99% of rows is usually a bug —
+  wrong column, type mismatch, or a timezone/date-boundary issue.
+- Watch `NULL` semantics: `WHERE col != 'x'` silently drops `NULL`s; `NOT IN`
+  with a `NULL` in the list returns no rows. Use `IS DISTINCT FROM` / explicit
+  null handling when nulls are meaningful.
+
+---
+
+## Phase 4 — Aggregate to the target grain
+
+Add the `GROUP BY`. Then **re-assert the grain on the output**:
+
+```sql
+-- the result must be unique at the declared grain
+select <grain_cols>, count(*) as n
+from (<your_query>) q
+group by <grain_cols>
+having count(*) > 1;     -- must return zero rows
+```
+
+- Confirm the output row count matches the Phase-0 expectation (~N).
+- Guard against **sum-after-join double-counting**: if any upstream join fanned
+  out before the aggregation, your `SUM`/`COUNT` is inflated. Reconcile at least
+  one aggregate (e.g. total revenue) against a trusted independent number from
+  Phase 0. If it doesn't tie out, the fan-out is upstream — go back to Phase 2.
+
+---
+
+## Phase 5 — Final reconciliation & handoff
+
+Before declaring done, run the final smoke tests:
+
+- Total row count vs the Phase-0 expectation.
+- Null check on grain keys and key metrics.
+- Duplicate check on the declared grain (the Phase-4 query returns zero rows).
+- **Manual spot-check**: pick one entity and verify its numbers by hand against
+  the source.
+
+Then summarize for the user: the final grain, the row count, what was verified,
+how key totals reconciled, and any caveats (e.g. nulls coalesced, a 1:many source
+that was rolled up).
+
+---
+
+## Reusable verification recipes
+
+- **Grain uniqueness:** `count(*)` vs `count(distinct key)` — they must be equal;
+  or `group by key having count(*) > 1` must return nothing.
+- **Fan-out detection:** group the right-side table by the join key, keep
+  `having count(*) > 1`.
+- **Row-count delta:** record the count after each layer; a join/filter that
+  changes it unexpectedly is the bug.
+- **Final smoke test:** rows, null keys, duplicate grain, one hand-checked entity.
+
+---
+
+## Adapting to dbt models
+
+Same phases — the verification layer becomes **dbt tests and `dbt build`** instead
+of ad-hoc count queries:
+
+- Build incrementally: staging → intermediate → mart, one model at a time.
+- After each model, add schema tests on the grain key (`unique`, `not_null`) and
+  `relationships` tests on join keys. These *are* your Phase-1/2/4 grain and
+  join-integrity checks, encoded so they fail the build.
+- Run `dbt build --select <model>+` so a downstream grain or fan-out break surfaces
+  immediately rather than at the end of the DAG.
+- Use `dbt show` (or a `limit`ed compiled query) to eyeball counts between layers,
+  exactly as you would the row-count delta check in raw SQL.
+
+---
+
+## Adapting to dataframes (pandas / Polars)
+
+Same phases, applied to merges instead of joins:
+
+- Make fan-out *raise* instead of silently duplicating: `pandas.merge(...,
+  validate="m:1")` (or `"1:1"`, `"1:m"`). The merge errors if the declared
+  relationship is violated — your Phase-2 gate, enforced.
+- Assert row-count deltas around each merge: `assert df.shape[0] == expected`.
+- Assert grain uniqueness: `assert not df.duplicated(subset=grain_keys).any()`.
+- Use `indicator=True` to find unmatched rows on a join you expected to match
+  fully (`left_only` / `right_only` counts).
+- In Polars, check `df.height` deltas and `df.select(grain_keys).is_duplicated().any()`.
+
+---
+
+## The one rule that doesn't bend
+
+Never declare the query done until the declared grain is *proven* unique and at
+least one key total is reconciled against the Phase-0 expectation. "It runs" is
+not "it's correct."
