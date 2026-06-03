@@ -77,25 +77,60 @@ Resolve owner and repo:
 gh repo view --json owner,name --jq '.owner.login + "/" + .name'
 ```
 
-Fetch inline review comments (the ones attached to specific file lines):
+Fetch inline review comments (the ones attached to specific file lines). Use
+`--paginate` and project just the fields you need so the payload stays small and
+parseable:
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate
+gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate \\
+  --jq '.[] | {id, in_reply_to_id, path, line, original_line, start_line, original_start_line, side, start_side, diff_hunk, body, user: .user.login}'
 ```
 
-Fetch general PR discussion comments (not attached to code):
+Fetch general PR discussion comments (not attached to code). This endpoint
+paginates too — **always pass `--paginate`** or comments past the first page are
+silently dropped:
 
 ```bash
-gh api repos/{owner}/{repo}/issues/{number}/comments
+gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \\
+  --jq '.[] | {id, body, user: .user.login, created_at}'
 ```
 
-Parse and group the inline comments into **threads** (a root comment plus its
-replies, keyed by file + position / `in_reply_to_id`). Summarize what you found:
-thread count, files touched, and how many general comments exist. Wait for the
-user to confirm before proceeding.
+**Group the inline comments into threads correctly.** A thread root has no
+`in_reply_to_id`; each reply carries `in_reply_to_id` pointing at the root
+comment's `id`. Group by chaining every reply back to its root via
+`in_reply_to_id` — **do not** key on `path`/`line`/`position` (those are display
+metadata, and `position` is `null` for outdated comments, which would scatter
+threads). Use `path` + `line`/`original_line` only for displaying where each
+thread lives.
 
-**Cap:** if there are more than 100 threads, say so and offer to filter (by
-file, by reviewer, or unresolved-only) before continuing.
+Summarize what you found: thread count (grouped, counting roots — not raw
+comments), files touched, and how many general comments exist. Wait for the user
+to confirm before proceeding.
+
+**Resolved threads:** the REST endpoint above carries no resolved/unresolved
+state. If the user wants to skip resolved threads or filter to unresolved-only,
+fetch resolution state via GraphQL and join on comment id:
+
+```bash
+gh api graphql -f query='
+  query($owner:String!,$repo:String!,$number:Int!){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$number){
+        reviewThreads(first:100){
+          nodes{ isResolved comments(first:1){ nodes{ databaseId } } }
+        }
+      }
+    }
+  }' -F owner={owner} -F repo={repo} -F number={number}
+```
+
+Map each thread's root `databaseId` to its `isResolved` flag. If you cannot or
+do not run this query, say so plainly — do not claim a thread is resolved/
+unresolved without the data.
+
+**Cap:** if there are more than 100 grouped threads, say so and offer to filter
+(by file, by reviewer, or unresolved-only — the last requires the GraphQL query
+above) before continuing.
 
 Handle `gh` failures gracefully at every call — show the error and ask how to
 proceed rather than fabricating results.
@@ -107,16 +142,25 @@ proceed rather than fabricating results.
 Process threads in **file order**: alphabetical by filename, then ascending by
 line number. For each thread:
 
-1. **Present the thread.** Header with file path and line number, then the
-   reviewer comment(s) in chronological order.
+1. **Present the thread.** Header with file path and the comment's line range
+   (`start_line`–`line` when it spans multiple lines, otherwise the single
+   `line`), then the reviewer comment(s) in chronological order.
 2. **Read the real code.** Open the file and show the cited line(s) with about
    ±15 lines of surrounding context. Always read the actual current code before
-   proposing anything. If the line numbers no longer line up with the content
-   the comment refers to, **warn that the line numbers may be stale** and locate
-   the intended code by content.
+   proposing anything. The branch may have moved since the comment was posted, so
+   anchor reliably:
+   - The comment's `diff_hunk` is the exact code the reviewer saw — use it (plus
+     `original_line` / `original_start_line`) to relocate the intended code by
+     content rather than trusting the raw line number.
+   - If the current line numbers no longer match that content, **warn that the
+     line numbers may be stale** and proceed against the relocated code.
+   - If the file no longer exists (deleted or renamed since the comment), say so
+     and treat the thread as discussion-only unless the user directs otherwise.
 3. **Propose a fix.** Categorize the thread as an **actionable change**, a
    **discussion point**, or **ambiguous**. For actionable changes, describe the
-   specific edit you'd make.
+   specific edit you'd make. If a comment contains a ```suggestion``` block, that
+   block is the reviewer's exact proposed replacement — apply it verbatim (still
+   gated) unless it's plainly wrong.
 4. **Gate and await approval.** Offer the choices:
    - `y` — apply the proposed fix
    - `n` — skip this thread
@@ -133,13 +177,15 @@ Then continue to Step 4.
 ## Step 3' — ORCHESTRATED mode (triage, approve once, dispatch)
 
 The orchestrator (you) plans and verifies; cheaper subagents do the mechanical
-editing. This mirrors the discipline of the [[tiered-delegate]] skill applied to
-PR feedback.
+editing — the strong model thinks, scopes, and QAs while a lighter model does the
+edits.
 
 ### 3'a — Triage into a fix plan
 
 Read the real code behind each thread first (don't plan from the comment text
-alone). Then sort every thread into one of:
+alone) — same anchoring rules as interactive Step 3.2: use `diff_hunk` /
+`original_line` to relocate moved code, and treat a ```suggestion``` block as the
+reviewer's exact proposed edit. Then sort every thread into one of:
 
 - **actionable-clear** — unambiguous fix; you know exactly what to change.
 - **needs-judgment** — actionable but with a real decision; state the options
