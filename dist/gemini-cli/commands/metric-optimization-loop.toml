@@ -99,7 +99,10 @@ One iteration is exactly this, in order:
    iteration is the default — batch only under the rules in *Levers & Search*.
 2. **Apply the change** to the pipeline.
 3. **Score it via the eval contract on the held-out set** — same command, same
-   frozen harness, every time. This produces the one comparable number.
+   frozen harness, every time. This produces the one comparable number. *Which*
+   held-out set is the decisive referee — the **validation** split, or the
+   **held-out inputs** set in the generative no-golden case — is fixed by *Split &
+   Measurement Discipline* below; it is never data the change was fit or tuned on.
 4. **Regression guard — the backbone.** Compare the number to the current
    **best-known-good**:
    - **Strictly better, beyond epsilon** (see noise note) → **keep.** This change
