@@ -1,0 +1,299 @@
+---
+name: bug-hunter
+description: Hunt for bugs in a codebase using a disciplined Discovery → Verify → Report loop where nothing is reported unless it is verified with reproducible evidence — no speculation, no unproven "maybes." Use when the user wants to find bugs, audit or review code for correctness or reliability problems, track down crashes or wrong behavior, hunt edge-case failures or logic errors, or asks things like "are there bugs in this?" or "why might this break?".
+---
+
+# Bug Hunter: Prove It Before You Report It
+
+A methodology for finding real bugs in a codebase. Cast a wide net while
+reading, then **prove** every suspicion before it earns the word "finding."
+The point is to produce a short list of defects the reader can trust
+completely, because each one comes with evidence — not a long list of maybes.
+
+## Core philosophy
+
+A quick read of any non-trivial codebase produces a flood of "this looks
+wrong" hunches, and most of them are mistaken — the code is fine, the case
+is already handled elsewhere, or the input can't actually occur. Reporting
+those hunches wastes the reader's time and trains them to ignore you. The
+value this skill adds is the opposite: **every reported bug is one you
+demonstrated.**
+
+Three rules govern everything below:
+
+1. **A lead is not a finding.** Discovery surfaces *suspicions*. Only
+   verification produces *findings*. Keep the two separate at all times.
+2. **No evidence, no report.** If you cannot demonstrate the bug — a failing
+   test, a concrete trace from input to wrong behavior, a reproducible crash
+   — then it does not go in the findings section. Period.
+3. **Reproduce safely.** Verify with minimal local reproductions against test
+   data in an isolated environment. Don't run repro scripts against
+   production or real user data.
+
+## The loop
+
+Run three phases in order. Discovery and Verify often interleave — a
+verification attempt frequently reveals a new lead — but Report is always
+last and only ever contains verified material.
+
+```
+┌──────────────┐     ┌──────────┐     ┌──────────┐
+│  DISCOVERY   │ ──▶ │  VERIFY  │ ──▶ │  REPORT  │
+│ (find leads) │     │ (prove)  │     │ (document)│
+└──────────────┘     └────┬─────┘     └──────────┘
+       ▲                  │
+       └──── new leads ◀──┘   (failed/unprovable leads are dropped or downgraded)
+```
+
+---
+
+## Phase 1 — Discovery / Identify
+
+Goal: build an inventory of *leads* — anything that looks outdated, fragile,
+inconsistent, or smelly. Be greedy here; quantity is fine because Verify will
+filter it. Do **not** judge severity yet and do **not** write anything
+user-facing.
+
+Start by understanding the shape of the code, then sweep for common bug
+classes.
+
+### Understand the code first
+
+Before reading line by line, get oriented:
+
+- **Inputs** — where does data enter? Function arguments, request/CLI
+  parameters, file reads, env vars, message consumers, anything the code
+  doesn't fully control.
+- **Invariants & assumptions** — what does each function assume about its
+  inputs and the surrounding state? Bugs live where an assumption is silently
+  violated.
+- **State changes** — where is shared or persistent state mutated? Caches,
+  globals, files, databases, fields on long-lived objects.
+- **Data flow** — follow values through transformations. Can a value arrive
+  in a shape the code below doesn't expect (null, empty, negative, huge,
+  wrong type)?
+- **Stack & inventory** — languages, frameworks, the dependency
+  manifest/lockfile, build and config files. Note outdated or deprecated
+  pieces.
+
+### Sweep for lead categories
+
+- **Null / undefined / missing** — dereferences without a guard, unchecked
+  return values, `Optional`/`nil`/`None` assumed present, missing map keys.
+- **Boundaries & arithmetic** — off-by-one, fencepost errors, integer
+  overflow/wraparound, division by zero, floating-point rounding, precision
+  loss.
+- **Logic errors** — inverted conditions, wrong comparison or boolean
+  operator, copy-paste mistakes, wrong default values, mismatched units,
+  incorrect operator precedence.
+- **Control flow** — missing `break`/`return`, fall-through, unreachable
+  code, early return skipping cleanup, wrong loop bounds.
+- **Error handling** — swallowed exceptions, overly broad catches, ignored
+  errors, error paths that leave state half-updated, retries without backoff
+  or idempotency.
+- **Resource management** — unclosed files/sockets/connections, leaks,
+  unbounded growth (caches, queues, logs), missing cleanup on the error path.
+- **Concurrency** — race conditions, check-then-act that isn't atomic,
+  TOCTOU, deadlocks, shared mutable state without synchronization,
+  assumptions of ordering.
+- **State & consistency** — stale caches, missing invalidation, partial
+  updates, inconsistent state across related fields, ordering dependencies
+  between operations.
+- **Type & coercion** — implicit conversions, comparing different types,
+  truthiness surprises, serialization/deserialization mismatches.
+- **API / contract misuse** — wrong argument order, misused library calls,
+  deprecated APIs used incorrectly, ignored documented preconditions or
+  return contracts.
+- **Edge cases** — empty collections, single-element cases, duplicates, very
+  large inputs, unicode/encoding, timezones and DST, leap years,
+  locale-dependent formatting.
+- **Performance defects that change behavior** — pathological complexity on
+  a hot path, N+1 queries, work that grows unbounded — when they cause
+  timeouts or failures, they're bugs.
+
+### Tools are lead generators, not oracles
+
+If linters, type checkers, compiler warnings, complexity/dead-code analyzers,
+or the existing test suite are available, run them — but treat **every**
+result as a lead to be verified, not a finding. These tools produce false
+positives, and a warning is only a real bug if it manifests in actual
+behavior.
+
+At the end of Phase 1 you should have a list of leads, each noting: location
+(file:line), suspected bug class, and why it caught your eye. Nothing here is
+trustworthy yet.
+
+---
+
+## Phase 2 — Verify
+
+Goal: convert leads into one of three states — **Confirmed** (proven, goes in
+the report), **Refuted** (proven not a bug, dropped), or **Unproven**
+(couldn't demonstrate it; dropped from findings, optionally noted separately
+as needing investigation).
+
+This is the phase that makes the skill worth using. **Be ruthless.** Your
+default posture is skepticism toward your own leads. A lead you can't prove
+is not a cautious "maybe" you get to report with a caveat — it is simply not
+a finding.
+
+### The verification bar
+
+A lead becomes a **Confirmed finding** only when you have **reproducible
+evidence**. Acceptable evidence, strongest first:
+
+1. **A failing/demonstrating test or script you wrote and ran** in a local
+   sandbox — the gold standard. Feed the triggering input and show the crash,
+   the wrong output, the leaked resource, or the corrupted state.
+2. **A complete, concrete trace** from a specific input to the specific
+   incorrect behavior, naming every hop and showing exactly where the logic
+   goes wrong. Acceptable when running code isn't feasible, but it must be
+   specific and complete — not "this value probably ends up wrong."
+3. **A reproducible observation** — running the existing test suite to expose
+   a regression, executing the real code path with a crafted input, diffing
+   expected vs. actual behavior.
+
+If none of these is achievable, the lead is **Unproven**. Do not promote it.
+
+### How to verify by bug class
+
+- **Null / boundary / arithmetic** — construct the input that hits the edge
+  (null, empty, max value, zero) and run it; capture the crash or wrong
+  result.
+- **Logic error** — write a unit test with an input where the buggy condition
+  matters and show expected vs. actual output.
+- **Error handling** — trigger the error path and show that state is left
+  inconsistent or the failure is silently swallowed.
+- **Resource leak** — exercise the path repeatedly and show the resource
+  isn't released (open handles growing, memory climbing, connections not
+  returned).
+- **Concurrency** — describe the precise interleaving; build a stress/repro
+  harness if feasible. If it genuinely isn't reproducible, it's Unproven —
+  say so honestly and set confidence accordingly rather than overclaiming.
+- **API / contract misuse** — show, via the library's documented behavior
+  plus a test, that the call produces the wrong result or violates a
+  precondition.
+- **Outdated/deprecated dependency** — confirm the project actually relies
+  on the affected behavior, not merely that an old version is present.
+
+### Reproduce safely
+
+Reproduce against the code under review in a **local, isolated environment**
+— fixtures, test databases, mock inputs. Don't run repro scripts against
+production systems or real user data. Keep reproductions minimal: just enough
+to prove the bug exists.
+
+---
+
+## Phase 3 — Report
+
+Goal: document the **Confirmed findings only**, each with enough detail that
+the reader can reproduce it and fix it. Order findings by severity, highest
+first.
+
+### Severity rubric
+
+Rate impact × likelihood. Use these tiers and state your reasoning:
+
+- **Critical** — data loss or corruption, crashes on a common path, results
+  that are silently and dangerously wrong in normal use.
+- **High** — wrong behavior or crashes that hit real users under realistic
+  conditions; resource leaks that degrade the system over time.
+- **Medium** — incorrect behavior in less common but reachable cases; needs
+  specific inputs or state to trigger.
+- **Low** — minor or cosmetic defects, narrow edge cases unlikely to occur in
+  practice.
+- **Info** — not a bug per se but a real fragility or smell worth flagging.
+
+### Report structure
+
+ALWAYS use this exact template:
+
+```markdown
+# Bug Hunt Report: [target name]
+
+## Summary
+- Scope reviewed: [what was and wasn't covered]
+- Confirmed findings: [count by severity, e.g. 1 Critical, 2 High, 1 Medium]
+- One-paragraph overall assessment.
+
+## Findings
+
+### [SEVERITY] — [Short title]
+- **Location:** `path/to/file.ext:LINE`
+- **Class:** [e.g. Off-by-one / Null dereference / Race condition]
+- **Confidence:** Confirmed
+- **Description:** What the bug is and why it's wrong.
+- **Evidence / Reproduction:** The test, trace, or steps that prove it. Include the
+  exact input and the observed result. This is mandatory — a finding without evidence
+  does not belong here.
+- **Impact:** What actually goes wrong for users or the system.
+- **Remediation:** Specific, code-level fix for *this* code — not generic advice. Show
+  the corrected pattern.
+
+[repeat per finding, ordered by severity]
+
+## Notes & unverified leads (optional)
+Leads that looked suspicious but could NOT be verified. Clearly labeled as unconfirmed
+so no one mistakes them for findings. Say what would be needed to confirm or refute each.
+
+## Coverage & limitations
+What you didn't get to, assumptions made, areas warranting deeper review.
+```
+
+### Save the report
+
+Write the completed report to a **dated** markdown file under a `.bug-hunt/`
+directory at the root of the codebase you scanned — for example
+`.bug-hunt/2026-06-05-bug-hunt-report.md` — in addition to summarizing the
+findings inline. Create `.bug-hunt/` if it does not exist, and use the report
+template above as the file's contents. Dating each report keeps prior hunts as
+a browsable history rather than a single file that gets overwritten; if two
+reports land on the same day, add a time or numeric suffix
+(`.bug-hunt/2026-06-05-bug-hunt-report-2.md`) so neither is lost.
+
+### Remediation quality
+
+Generic advice ("add a null check") is weak. Strong remediation shows the fix
+for the actual line in question: the corrected condition, the guard with the
+right default, the fixed loop bound, the resource freed on every path. Tie it
+to the evidence so the reader can re-run the same check to confirm the fix
+worked.
+
+---
+
+## Anti-patterns — do not do these
+
+- **Reporting an unverified lead** with a hedge like "this could be broken."
+  If you didn't prove it, it goes in *Notes & unverified leads* or nowhere.
+  This is the cardinal sin and the whole reason this skill exists.
+- **Trusting tool output** as a finding without confirming the bug actually
+  manifests.
+- **Padding the report** with low-value style nits to look thorough. A short
+  report of real bugs beats a long one of noise.
+- **Generic remediation** copied from a checklist instead of fixing the
+  specific code.
+- **Severity inflation** — calling everything High to seem impactful. Rate
+  honestly.
+
+## A quick worked example
+
+**Lead (Discovery):** `cart/totals.js:58` loops `for (i = 0; i <= items.length; i++)`
+— the `<=` looks like an off-by-one.
+
+**Verify:** Wrote a test calling `computeTotal([{price: 10}])`. It threw
+`TypeError: Cannot read properties of undefined (reading 'price')` because
+the loop reads `items[1]` on a one-element array. Confirmed the `<=` should
+be `<`. → **Confirmed.**
+
+**Report:**
+> ### High — Off-by-one crashes total calculation
+> - **Location:** `cart/totals.js:58`
+> - **Class:** Off-by-one / boundary error
+> - **Confidence:** Confirmed
+> - **Evidence:** Test `totals.test.js` calls `computeTotal([{price: 10}])` and throws
+>   `TypeError ... reading 'price'`; the loop condition `i <= items.length` reads one
+>   element past the end.
+> - **Impact:** Any cart total computation crashes, breaking checkout for every user.
+> - **Remediation:** Change the loop condition from `i <= items.length` to
+>   `i < items.length`. Re-run the test to confirm it returns `10`.
