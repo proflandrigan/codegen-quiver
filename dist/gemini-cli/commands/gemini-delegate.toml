@@ -185,7 +185,14 @@ gemini -p "<contents of this task's blueprint>" --approval-mode auto_edit
   headless mode this means Gemini can create and modify files but **cannot run
   shell commands, git, tests, or builds** — it is physically incapable of
   self-validating. This is the intended boundary, not a limitation to work
-  around.
+  around. (Verified: under `auto_edit` the `run_shell_command` tool is not even
+  exposed to Gemini.)
+- **Trusted-folder gate:** in headless mode Gemini refuses to act in a directory
+  it does not trust, silently downgrading the approval mode and erroring out
+  ("not running in a trusted directory"). If the working tree is not already
+  trusted, add `--skip-trust` to the command (or export
+  `GEMINI_CLI_TRUST_WORKSPACE=true`). Only do this for trees you control — it is
+  the headless equivalent of trusting the folder interactively.
 - Pass the blueprint's contents directly in the prompt string (and/or point
   Gemini at the blueprint file's path, since Gemini can read files in the
   workspace it's launched from).
