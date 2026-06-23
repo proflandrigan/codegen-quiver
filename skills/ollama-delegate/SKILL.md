@@ -200,19 +200,25 @@ ephemeral by default and they can override.
 
 ---
 
-## Phase 4 — Dispatch Loop (one task at a time)
+## Phase 4 — Dispatch Loop (one task at a time, runs to completion)
+
+Once the user approves the decomposition in Phase 2, **run the entire plan to
+completion without further check-ins.** Do not pause before each task to ask
+"ready to send Task N?" — approval of the plan is approval to execute all of
+it. The only thing that should interrupt the loop is a QA failure (see retry
+policy and per-task QA below) or the user proactively interjecting.
 
 For each task in order:
 
-1. **Show the blueprint preview** for this task only in chat. Ask: *"Ready to
-   send Task N to the local model, or do you want edits?"* Wait for
-   confirmation.
+1. **Post the blueprint preview** for this task in chat as a log entry (not a
+   question) so the user can follow along, then proceed immediately.
 2. **Dispatch to Ollama** (see below).
 3. **Extract and apply the edit yourself** — you write the file, Ollama never
    does.
-4. **QA the result yourself** before moving to the next task.
-5. **Delete the blueprint** (unless retention was requested), then proceed to
-   Task N+1.
+4. **QA the result yourself** (see Per-task QA below). This step is mandatory
+   and is what keeps unattended execution safe — never skip it to go faster.
+5. **Delete the blueprint** (unless retention was requested), then proceed
+   immediately to Task N+1 — no confirmation needed.
 
 Do **not** queue multiple tasks to Ollama in one shot. The whole point of the
 decomposition is to keep the local model's working set tiny and your QA loop
@@ -307,11 +313,13 @@ After applying each accepted response:
    output — harder, given the weaker source.
 3. **Run the task's verification step** — the specific test from the
    blueprint, plus any quick lint/typecheck the project uses.
-4. **Report to the user:** files changed, test status, anything suspicious,
-   and how many retries (if any) it took. Recommend a fix-loop or confirm and
-   move on.
+4. **Post a short status note in chat:** files changed, test status, anything
+   suspicious, and how many retries (if any) it took. This is a log entry, not
+   a question — if QA passes, proceed without waiting for the user to confirm.
+   If QA fails and can't be resolved within the retry policy, stop and flag it
+   per that policy instead of plowing ahead.
 5. **Delete the blueprint file** (unless retention requested), then proceed
-   to the next task.
+   immediately to the next task.
 
 ---
 

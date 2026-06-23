@@ -129,17 +129,23 @@ ephemeral by default and they can override.
 
 ---
 
-## Phase 4 — Dispatch Loop (one task at a time)
+## Phase 4 — Dispatch Loop (one task at a time, runs to completion)
+
+Once the user approves the decomposition in Phase 2, **run the entire plan to
+completion without further check-ins.** Do not pause before each task to ask
+"ready to dispatch Task N?" — approval of the plan is approval to execute all
+of it. The only thing that should interrupt the loop is a QA failure (see
+per-task QA below) or the user proactively interjecting.
 
 For each task in order:
 
-1. **Show the blueprint preview** for this task only in chat. Ask: *"Ready to
-   dispatch Task N to a `<tier>` subagent, or do you want edits?"* Wait for
-   confirmation.
+1. **Post the blueprint preview** for this task in chat as a log entry (not a
+   question) so the user can follow along, then proceed immediately.
 2. **Spawn the subagent** on a cheaper model tier (see below).
-3. **QA the result** before moving to the next task.
-4. **Delete the blueprint** (unless retention was requested), then proceed to
-   Task N+1.
+3. **QA the result** (see Per-task QA below). This step is mandatory and is
+   what keeps unattended execution safe — never skip it to go faster.
+4. **Delete the blueprint** (unless retention was requested), then proceed
+   immediately to Task N+1 — no confirmation needed.
 
 Do **not** queue multiple tasks to the executor in one shot. The whole point of
 the decomposition is to keep the cheap model's context tight and your QA loop
@@ -210,11 +216,14 @@ After each subagent run:
 3. **Run the task's verification step** — the specific test from the blueprint,
    plus any quick lint/typecheck the project uses. You run these directly; the
    subagent does not.
-4. **Report to the user:** files changed, test status, anything suspicious.
-   Recommend a fix-loop (re-issue a corrective mini-blueprint to a subagent, or
-   just fix it yourself if it's faster) if needed, or confirm and move on.
-5. **Delete the blueprint file** (unless retention requested), then proceed to
-   the next task.
+4. **Post a short status note in chat:** files changed, test status, anything
+   suspicious. This is a log entry, not a question — if QA passes, proceed
+   without waiting for the user to confirm. If QA fails, resolve it yourself
+   (re-issue a corrective mini-blueprint to a subagent, or just fix it
+   yourself if it's faster) and keep going; only stop and flag the user if you
+   can't resolve it after a reasonable attempt.
+5. **Delete the blueprint file** (unless retention requested), then proceed
+   immediately to the next task.
 
 ---
 
