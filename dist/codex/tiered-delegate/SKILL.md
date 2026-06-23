@@ -129,17 +129,23 @@ ephemeral by default and they can override.
 
 ---
 
-## Phase 4 — Dispatch Loop (one task at a time)
+## Phase 4 — Dispatch Loop (one task at a time, runs to completion)
+
+Once the user approves the decomposition in Phase 2, **run the entire plan to
+completion without further check-ins.** Do not pause before each task to ask
+"ready to dispatch Task N?" — approval of the plan is approval to execute all
+of it. The only thing that should interrupt the loop is a QA failure (see
+per-task QA below) or the user proactively interjecting.
 
 For each task in order:
 
-1. **Show the blueprint preview** for this task only in chat. Ask: *"Ready to
-   dispatch Task N to a `<tier>` subagent, or do you want edits?"* Wait for
-   confirmation.
+1. **Post the blueprint preview** for this task in chat as a log entry (not a
+   question) so the user can follow along, then proceed immediately.
 2. **Spawn the subagent** on a cheaper model tier (see below).
-3. **QA the result** before moving to the next task.
-4. **Delete the blueprint** (unless retention was requested), then proceed to
-   Task N+1.
+3. **QA the result** (see Per-task QA below). This step is mandatory and is
+   what keeps unattended execution safe — never skip it to go faster.
+4. **Delete the blueprint** (unless retention was requested), then proceed
+   immediately to Task N+1 — no confirmation needed.
 
 Do **not** queue multiple tasks to the executor in one shot. The whole point of
 the decomposition is to keep the cheap model's context tight and your QA loop
@@ -210,15 +216,59 @@ After each subagent run:
 3. **Run the task's verification step** — the specific test from the blueprint,
    plus any quick lint/typecheck the project uses. You run these directly; the
    subagent does not.
-4. **Report to the user:** files changed, test status, anything suspicious.
-   Recommend a fix-loop (re-issue a corrective mini-blueprint to a subagent, or
-   just fix it yourself if it's faster) if needed, or confirm and move on.
-5. **Delete the blueprint file** (unless retention requested), then proceed to
-   the next task.
+4. **Post a short status note in chat:** files changed, test status, anything
+   suspicious. This is a log entry, not a question — if QA passes, proceed
+   without waiting for the user to confirm. If QA fails, resolve it yourself
+   (re-issue a corrective mini-blueprint to a subagent, or just fix it
+   yourself if it's faster) and keep going; only stop and flag the user if you
+   can't resolve it after a reasonable attempt.
+5. **Delete the blueprint file** (unless retention requested), then proceed
+   immediately to the next task.
 
 ---
 
-## Phase 5 — Final Wrap-Up
+## Phase 5 — Commit, Final Review, Commit Again
+
+Once every task in the dispatch loop has completed (and passed its per-task
+QA), run this phase **automatically** — no check-in needed, same as the
+dispatch loop itself.
+
+1. **Check whether you're on a git branch:**
+   `git rev-parse --abbrev-ref HEAD`. If this returns `HEAD` (detached) or the
+   command fails (not a git repo), you are **not** on a branch — do nothing
+   further in this phase and skip to Phase 6.
+2. **If on a branch**, stage and commit the work from the dispatch loop with a
+   message summarizing the feature (follow the repo's existing commit-message
+   style and the standard git safety rules — specific files only, no `-A`/`.`,
+   no `--no-verify`, no force). Push the branch (set upstream with `-u` if it
+   isn't tracking one yet).
+3. **Dispatch one final subagent — the reviewer.** This is a fresh, explicit
+   review pass over the *entire* feature, not another implementation task:
+   - Give it the cumulative diff (`git diff <base>...HEAD` or equivalent) and
+     the original locked intent from Phase 1 as context.
+   - Its job: find and fix bugs, cross-task inconsistencies (drift between
+     tasks that individually passed QA but don't agree with each other), and
+     structural weaknesses — then make the corrections directly.
+   - Run it on the same cheaper tier you used for implementation tasks (Phase
+     4 tier rules apply) — this is a mechanical cleanup pass, not new
+     planning, so it does not need to run on your own model.
+   - It edits files only, same division of labor as Phase 4 — it does not run
+     tests, builds, or git itself.
+4. **QA the reviewer's changes yourself** — same rigor as per-task QA in Phase
+   4: read the diff, run the project's validation suite, confirm nothing
+   outside reasonable scope was touched.
+5. **Commit and push again, but only if you're still on a branch** (re-check
+   per step 1 — branches don't change mid-run, but stay consistent with the
+   "do nothing if not on a branch" rule). Use a commit message that makes
+   clear this is a review/fixup pass on top of the feature commit.
+
+If at any point you are not on a branch, skip the git actions in this phase
+entirely but still run the reviewer subagent and report its findings — fixing
+bugs and inconsistencies is valuable even when there's nothing to push.
+
+---
+
+## Phase 6 — Final Wrap-Up
 
 After all tasks complete:
 
@@ -230,3 +280,5 @@ After all tasks complete:
   tests, UI checks, deploy steps).
 - Confirm all temp blueprints under `.agent-plans/tiered-delegate/` are deleted
   (or list the ones retained, if the user opted to keep them).
+- Report whether the work was committed/pushed in Phase 5, or note that it was
+  skipped because you were not on a branch.
