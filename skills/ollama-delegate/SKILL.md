@@ -27,11 +27,16 @@ labor from a tool like Gemini CLI or Qwen Code:
   Write/Edit tools. There is no `--approval-mode auto_edit` equivalent — *you*
   are the thing that touches the working tree.
 - **Local models (7B–34B class, often quantized) are meaningfully weaker and
-  shorter-context than cloud frontier models.** Treat every task like you're
-  handing it to a junior developer fresh out of college on their first day:
-  spell out literally everything, give them the exact starting code to work
-  from, tell them exactly what the output should look like, and expect them
-  to need a do-over more often than a senior engineer would.
+  shorter-context than cloud frontier models.** When *you* decompose and size
+  tasks, plan as if you were handing this to a junior developer fresh out of
+  college on their first day: spell out literally everything, give them the
+  exact starting code to work from, tell them exactly what the output should
+  look like, and expect more do-overs than a senior engineer would need. This
+  junior-dev framing is for **your planning judgment only** — it governs how
+  small and explicit you make each task. It does **not** describe how you
+  should address the model in the blueprint prompt itself (see Phase 3): the
+  model should be told to act as a senior engineer executing surgically, not
+  a junior who needs encouragement or hand-holding tone.
 - **Tasks must be radically smaller** than you'd hand to Gemini or an in-tool
   subagent. One function. One small file. One narrow change. If a task needs
   the model to track more than one file's content or more than one concern at
@@ -150,9 +155,15 @@ them. Each blueprint MUST include:
 - **Task ID and title** (e.g., "Task 03 — Add `validate_email` field to
   `UserCreate` model").
 - **Role framing, stated explicitly:** open the prompt with something like
-  "You are a careful junior developer. Follow these instructions exactly and
-  do not improvise beyond them." Small models respond measurably better to an
-  explicit, narrow role than an implicit one.
+  "You are a senior software engineer. Execute the following task exactly and
+  completely — surgically: make only the change specified, make all of it,
+  and do not improvise beyond it." Small models respond measurably better to
+  an explicit, narrow role than an implicit one. The "junior developer"
+  framing from earlier in this skill describes how *you* should size and
+  spell out the task during planning — it is never the persona you hand to
+  the model. A senior-engineer framing gets a more confident, complete,
+  non-hedging response; pair it with the explicit scope and guardrails below
+  so that confidence doesn't turn into improvisation.
 - **The exact current file content** the model needs to start from, pasted
   verbatim inside a fenced code block — not summarized, not described. If the
   file is large, paste only the relevant section but say explicitly "this is
