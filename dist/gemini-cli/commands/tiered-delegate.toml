@@ -224,7 +224,48 @@ After each subagent run:
 
 ---
 
-## Phase 5 — Final Wrap-Up
+## Phase 5 — Commit, Final Review, Commit Again
+
+Once every task in the dispatch loop has completed (and passed its per-task
+QA), run this phase **automatically** — no check-in needed, same as the
+dispatch loop itself.
+
+1. **Check whether you're on a git branch:**
+   `git rev-parse --abbrev-ref HEAD`. If this returns `HEAD` (detached) or the
+   command fails (not a git repo), you are **not** on a branch — do nothing
+   further in this phase and skip to Phase 6.
+2. **If on a branch**, stage and commit the work from the dispatch loop with a
+   message summarizing the feature (follow the repo's existing commit-message
+   style and the standard git safety rules — specific files only, no `-A`/`.`,
+   no `--no-verify`, no force). Push the branch (set upstream with `-u` if it
+   isn't tracking one yet).
+3. **Dispatch one final subagent — the reviewer.** This is a fresh, explicit
+   review pass over the *entire* feature, not another implementation task:
+   - Give it the cumulative diff (`git diff <base>...HEAD` or equivalent) and
+     the original locked intent from Phase 1 as context.
+   - Its job: find and fix bugs, cross-task inconsistencies (drift between
+     tasks that individually passed QA but don't agree with each other), and
+     structural weaknesses — then make the corrections directly.
+   - Run it on the same cheaper tier you used for implementation tasks (Phase
+     4 tier rules apply) — this is a mechanical cleanup pass, not new
+     planning, so it does not need to run on your own model.
+   - It edits files only, same division of labor as Phase 4 — it does not run
+     tests, builds, or git itself.
+4. **QA the reviewer's changes yourself** — same rigor as per-task QA in Phase
+   4: read the diff, run the project's validation suite, confirm nothing
+   outside reasonable scope was touched.
+5. **Commit and push again, but only if you're still on a branch** (re-check
+   per step 1 — branches don't change mid-run, but stay consistent with the
+   "do nothing if not on a branch" rule). Use a commit message that makes
+   clear this is a review/fixup pass on top of the feature commit.
+
+If at any point you are not on a branch, skip the git actions in this phase
+entirely but still run the reviewer subagent and report its findings — fixing
+bugs and inconsistencies is valuable even when there's nothing to push.
+
+---
+
+## Phase 6 — Final Wrap-Up
 
 After all tasks complete:
 
@@ -236,4 +277,6 @@ After all tasks complete:
   tests, UI checks, deploy steps).
 - Confirm all temp blueprints under `.agent-plans/tiered-delegate/` are deleted
   (or list the ones retained, if the user opted to keep them).
+- Report whether the work was committed/pushed in Phase 5, or note that it was
+  skipped because you were not on a branch.
 """
